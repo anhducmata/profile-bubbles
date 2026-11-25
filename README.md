@@ -2,7 +2,7 @@
 
 # Profile Bubbles
 
-A column of small bubbles that always floats on the left edge of your Mac screen, one per
+Small bubbles that always float at the edge of your Mac screen (left by default), one per
 Google Chrome profile. Click a bubble (or press a hotkey) to jump to that profile's window.
 
 Native macOS app: one Swift file, no dependencies, no network access.
@@ -13,9 +13,10 @@ Native macOS app: one Swift file, no dependencies, no network access.
 - **Click** a bubble: brings that profile's open Chrome window to the front, tabs untouched.
   If the profile has no window, Chrome opens one.
 - **Control+Option+1 … 9**: same as clicking bubble 1 … 9 (top to bottom).
-- Hover shows the profile name and its hotkey. Drag a bubble up or down to move the column.
+- Hover shows the profile name and its hotkey.
+- Choose where the bubbles sit: left edge, right edge, around the notch, bottom left or bottom right.
 - Stays visible on every Space and over full-screen apps. No Dock icon.
-- Right-click a bubble: reload, edit the list, open at login, quit.
+- Right-click a bubble: settings, reload, edit the list, open at login, quit.
 
 ## Requirements
 
@@ -30,6 +31,23 @@ open "build/Profile Bubbles.app"
 ```
 
 There is no prebuilt download yet: the app is not notarized, so build it yourself.
+
+## Settings
+
+Right-click a bubble → **Settings…**
+
+| Setting | Options |
+|---|---|
+| Position | Left edge, Right edge, Around the notch, Bottom left, Bottom right |
+| Bubble size | Small, Medium, Large |
+| Open at login | On / off |
+
+- **Left / right edge:** a vertical column. Drag a bubble up or down to move the column.
+- **Bottom left / right:** a horizontal row in the very corner of the screen, beside the Dock
+  (on top of it if the Dock is wide enough to reach the corner).
+- **Around the notch:** the bubbles sit inside the menu bar, half on each side of the notch, and
+  take the menu bar's height (the size setting is ignored). They can cover menu titles or menu bar
+  icons that reach the notch. On a Mac without a notch they form a centred row under the menu bar.
 
 ## Permissions
 
