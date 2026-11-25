@@ -566,7 +566,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .bottomLeft, .bottomRight:
             let width = n * size
             let x = position == .bottomLeft ? visible.minX + edgeGap : visible.maxX - edgeGap - width
-            frame = NSRect(x: x, y: visible.minY + edgeGap, width: width, height: size)
+            // The real bottom of the screen, not the top of the Dock's strip: a centred Dock leaves
+            // the corners free, and the panel floats above the Dock if they ever overlap.
+            frame = NSRect(x: x, y: screen.frame.minY + edgeGap, width: width, height: size)
             origins = (0..<count).map { NSPoint(x: CGFloat($0) * size, y: 0) }
         case .notch:
             if screen.safeAreaInsets.top > 0, let left = screen.auxiliaryTopLeftArea,

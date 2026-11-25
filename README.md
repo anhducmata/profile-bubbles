@@ -43,7 +43,8 @@ Right-click a bubble → **Settings…**
 | Open at login | On / off |
 
 - **Left / right edge:** a vertical column. Drag a bubble up or down to move the column.
-- **Bottom left / right:** a horizontal row in the corner, above the Dock.
+- **Bottom left / right:** a horizontal row in the very corner of the screen, beside the Dock
+  (on top of it if the Dock is wide enough to reach the corner).
 - **Around the notch:** the bubbles sit inside the menu bar, half on each side of the notch, and
   take the menu bar's height (the size setting is ignored). They can cover menu titles or menu bar
   icons that reach the notch. On a Mac without a notch they form a centred row under the menu bar.
