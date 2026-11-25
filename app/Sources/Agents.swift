@@ -750,13 +750,22 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
         case .submitInput, .prompt, .interrupt:
             queue.async { [weak self] in
                 let screen = Orca.screen(of: handle)
-                let box = Orca.input(of: handle).text
+                let found = Orca.input(of: handle)
+                let box = found.text
                 var args: [String]?
                 var name = ""
                 switch action {
                 case .submitInput(let shown):
                     name = "submit input"
-                    if box == shown, parsePrompt(screen) == nil { args = ["--enter"] }
+                    if box == shown, parsePrompt(screen) == nil {
+                        // Text Orca reports as `draft` lives in Orca's own composer, not in the
+                        // terminal, so Enter alone would submit nothing: type it as well.
+                        if found.source == "draft" {
+                            if inputText(found.screen) == "" { args = ["--text", shown, "--enter"] }
+                        } else {
+                            args = ["--enter"]
+                        }
+                    }
                 case .prompt(let text):
                     name = "quick prompt"
                     if box == "", parsePrompt(screen) == nil { args = ["--text", text, "--enter"] }
