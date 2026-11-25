@@ -283,7 +283,32 @@ func installHotKeys() {
 
 // MARK: - Bubble
 
-let bubbleSize: CGFloat = 52
+enum Position: String, CaseIterable {
+    case left, right, notch, bottomLeft, bottomRight
+
+    var title: String {
+        switch self {
+        case .left: return tr("Left edge", "Mép trái")
+        case .right: return tr("Right edge", "Mép phải")
+        case .notch: return tr("Around the notch", "Quanh tai thỏ")
+        case .bottomLeft: return tr("Bottom left", "Góc dưới trái")
+        case .bottomRight: return tr("Bottom right", "Góc dưới phải")
+        }
+    }
+    var isSideColumn: Bool { self == .left || self == .right }
+
+    static var current: Position {
+        Position(rawValue: UserDefaults.standard.string(forKey: "position") ?? "") ?? .left
+    }
+}
+
+let sizeChoices: [(title: String, points: CGFloat)] = [
+    (tr("Small", "Nhỏ"), 40), (tr("Medium", "Vừa"), 52), (tr("Large", "Lớn"), 64)]
+
+var preferredBubbleSize: CGFloat {
+    let stored = UserDefaults.standard.double(forKey: "bubbleSize")
+    return stored >= 24 ? CGFloat(stored) : 52
+}
 
 final class BubbleView: NSView {
     let profile: Profile
@@ -295,10 +320,10 @@ final class BubbleView: NSView {
     private var originAtDown = NSPoint.zero
     private var dragged = false
 
-    init(profile: Profile) {
+    init(profile: Profile, size: CGFloat) {
         self.profile = profile
         self.image = profile.picture.flatMap { NSImage(contentsOfFile: $0) }
-        super.init(frame: NSRect(x: 0, y: 0, width: bubbleSize, height: bubbleSize))
+        super.init(frame: NSRect(x: 0, y: 0, width: size, height: size))
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -311,7 +336,8 @@ final class BubbleView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let rect = bounds.insetBy(dx: hovering ? 3 : 6, dy: hovering ? 3 : 6)
+        let inset = bounds.width * (hovering ? 0.06 : 0.115)
+        let rect = bounds.insetBy(dx: inset, dy: inset)
         let circle = NSBezierPath(ovalIn: rect)
 
         NSGraphicsContext.saveGraphicsState()
@@ -365,6 +391,7 @@ final class BubbleView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard Position.current.isSideColumn else { return }   // only the side columns can be dragged
         let dy = NSEvent.mouseLocation.y - downAt.y
         if !dragged && abs(dy) < 4 { return }
         dragged = true
@@ -409,6 +436,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel = makePanel()
         makeLabel()
 
+        let settings = NSMenuItem(title: tr("Settings…", "Cài đặt…"), action: #selector(showSettings), keyEquivalent: "")
+        settings.target = self
+        contextMenu.addItem(settings)
+        contextMenu.addItem(.separator())
         let reload = NSMenuItem(title: tr("Reload Profiles", "Tải lại danh sách profile"), action: #selector(reloadNow), keyEquivalent: "")
         reload.target = self
         contextMenu.addItem(reload)
@@ -427,6 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuild(force: true)
         panel.orderFrontRegardless()
 
+        if CommandLine.arguments.contains("--settings") { showSettings() }
         // Test hook: `--activate "<profile dir>"` acts as a click on that bubble right after launch.
         if let i = CommandLine.arguments.firstIndex(of: "--activate"), i + 1 < CommandLine.arguments.count,
            let target = profiles.first(where: { $0.dir == CommandLine.arguments[i + 1] }) {
@@ -480,7 +512,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         task.arguments = ["-t", configPath]
         try? task.run()
     }
-    @objc private func screenChanged() { placePanel() }
+    @objc private func screenChanged() { layout() }
 
     private func rebuild(force: Bool) {
         func mtime(_ path: String) -> Date {
@@ -503,32 +535,150 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--debug-menus") { logChromeMenus(profiles: profiles) }
         log("showing \(count) bubble(s): \(profiles.map(\.dir).joined(separator: ", "))")
 
-        let height = CGFloat(count) * bubbleSize + padding * 2
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: bubbleSize, height: height))
+        layout()
+    }
+
+    private func targetScreen(for position: Position) -> NSScreen? {
+        if position == .notch, let notched = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) {
+            return notched
+        }
+        return NSScreen.screens.first ?? NSScreen.main
+    }
+
+    /// Builds the bubbles for the chosen position and size, and puts the panel in place.
+    func layout() {
+        let position = Position.current
+        guard let screen = targetScreen(for: position), count > 0 else { return }
+        let visible = screen.visibleFrame
+        var size = preferredBubbleSize
+        let n = CGFloat(count)
+        var frame = NSRect.zero
+        var origins: [NSPoint] = []
+
+        switch position {
+        case .left, .right:
+            let height = n * size + padding * 2
+            let stored = UserDefaults.standard.object(forKey: positionKey) as? Double
+            let centerY = visible.minY + visible.height * CGFloat(stored ?? 0.5)
+            let x = position == .left ? visible.minX + edgeGap : visible.maxX - edgeGap - size
+            frame = NSRect(x: x, y: clampY(centerY - height / 2, height: height), width: size, height: height)
+            origins = (0..<count).map { NSPoint(x: 0, y: height - padding - CGFloat($0 + 1) * size) }
+        case .bottomLeft, .bottomRight:
+            let width = n * size
+            let x = position == .bottomLeft ? visible.minX + edgeGap : visible.maxX - edgeGap - width
+            frame = NSRect(x: x, y: visible.minY + edgeGap, width: width, height: size)
+            origins = (0..<count).map { NSPoint(x: CGFloat($0) * size, y: 0) }
+        case .notch:
+            if screen.safeAreaInsets.top > 0, let left = screen.auxiliaryTopLeftArea,
+               let right = screen.auxiliaryTopRightArea, right.minX > left.maxX {
+                // Inside the menu bar strip: first half hugs the notch's left side, the rest its right side.
+                size = screen.safeAreaInsets.top
+                let leftCount = (count + 1) / 2
+                let notchWidth = right.minX - left.maxX
+                let leftWidth = CGFloat(leftCount) * size
+                frame = NSRect(x: left.maxX - leftWidth, y: screen.frame.maxY - size,
+                               width: leftWidth + notchWidth + CGFloat(count - leftCount) * size, height: size)
+                origins = (0..<count).map { index in
+                    index < leftCount ? NSPoint(x: CGFloat(index) * size, y: 0)
+                                      : NSPoint(x: leftWidth + notchWidth + CGFloat(index - leftCount) * size, y: 0)
+                }
+            } else {
+                // No notch on this Mac: a centred row just under the menu bar.
+                let width = n * size
+                frame = NSRect(x: visible.midX - width / 2, y: visible.maxY - size - edgeGap, width: width, height: size)
+                origins = (0..<count).map { NSPoint(x: CGFloat($0) * size, y: 0) }
+            }
+        }
+
+        let content = NSView(frame: NSRect(origin: .zero, size: frame.size))
         for (index, profile) in profiles.enumerated() {
-            let bubble = BubbleView(profile: profile)
+            let bubble = BubbleView(profile: profile, size: size)
             bubble.controller = self
             bubble.index = index
-            bubble.setFrameOrigin(NSPoint(x: 0, y: height - padding - CGFloat(index + 1) * bubbleSize))
+            bubble.setFrameOrigin(origins[index])
             content.addSubview(bubble)
         }
         hideLabel()
         panel.contentView = content
-        placePanel()
-    }
-
-    private func placePanel() {
-        let screen = screenFrame
-        let height = CGFloat(count) * bubbleSize + padding * 2
-        let stored = UserDefaults.standard.object(forKey: positionKey) as? Double
-        let centerY = screen.minY + screen.height * CGFloat(stored ?? 0.5)
-        panel.setFrame(NSRect(x: screen.minX + edgeGap, y: clampY(centerY - height / 2, height: height),
-                              width: bubbleSize, height: height), display: true)
+        panel.setFrame(frame, display: true)
+        log("layout: \(position.rawValue), bubble \(Int(size)) pt, frame \(Int(frame.minX)),\(Int(frame.minY)) \(Int(frame.width))x\(Int(frame.height)), screen \(Int(screen.frame.width))x\(Int(screen.frame.height))")
     }
 
     private func clampY(_ y: CGFloat, height: CGFloat) -> CGFloat {
         let screen = screenFrame
         return min(max(y, screen.minY), max(screen.minY, screen.maxY - height))
+    }
+
+    // MARK: Settings window
+
+    private var settingsWindow: NSWindow?
+    private var loginCheckbox: NSButton?
+
+    @objc func showSettings() {
+        if settingsWindow == nil {
+            let positionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+            positionPopup.addItems(withTitles: Position.allCases.map(\.title))
+            positionPopup.selectItem(at: Position.allCases.firstIndex(of: Position.current) ?? 0)
+            positionPopup.target = self
+            positionPopup.action = #selector(positionChanged(_:))
+
+            let sizePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+            sizePopup.addItems(withTitles: sizeChoices.map(\.title))
+            sizePopup.selectItem(at: sizeChoices.firstIndex { $0.points == preferredBubbleSize } ?? 1)
+            sizePopup.target = self
+            sizePopup.action = #selector(sizeChanged(_:))
+
+            let login = NSButton(checkboxWithTitle: tr("Open at login", "Mở khi đăng nhập"),
+                                 target: self, action: #selector(toggleLoginItem))
+            login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+            loginCheckbox = login
+
+            let hint = NSTextField(wrappingLabelWithString: tr(
+                "Left and right edge: drag a bubble up or down to move the column. Around the notch: bubbles sit in the menu bar and use its height.",
+                "Mép trái và mép phải: kéo một bong bóng lên xuống để dời cả cột. Quanh tai thỏ: bong bóng nằm trong thanh menu và cao bằng thanh menu."))
+            hint.font = .systemFont(ofSize: 11)
+            hint.textColor = .secondaryLabelColor
+            hint.preferredMaxLayoutWidth = 230
+
+            let grid = NSGridView(views: [
+                [NSTextField(labelWithString: tr("Position:", "Vị trí:")), positionPopup],
+                [NSTextField(labelWithString: tr("Bubble size:", "Cỡ bong bóng:")), sizePopup],
+                [NSGridCell.emptyContentView, login],
+                [NSGridCell.emptyContentView, hint]])
+            grid.column(at: 0).xPlacement = .trailing
+            grid.rowSpacing = 10
+            grid.columnSpacing = 8
+            grid.translatesAutoresizingMaskIntoConstraints = false
+
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 220),
+                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = tr("Profile Bubbles Settings", "Cài đặt Profile Bubbles")
+            window.isReleasedWhenClosed = false
+            let content = NSView()
+            content.addSubview(grid)
+            NSLayoutConstraint.activate([
+                grid.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+                grid.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+                grid.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+                grid.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20)])
+            window.contentView = content
+            window.center()
+            settingsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        log("settings: window shown")
+    }
+
+    @objc private func positionChanged(_ sender: NSPopUpButton) {
+        let position = Position.allCases[max(0, sender.indexOfSelectedItem)]
+        UserDefaults.standard.set(position.rawValue, forKey: "position")
+        layout()
+    }
+
+    @objc private func sizeChanged(_ sender: NSPopUpButton) {
+        UserDefaults.standard.set(Double(sizeChoices[max(0, sender.indexOfSelectedItem)].points), forKey: "bubbleSize")
+        layout()
     }
 
     // Launch at login. Turned on once on first run; after that the menu item is the switch.
@@ -543,6 +693,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refreshLoginItem() {
         let status = SMAppService.mainApp.status
         loginItem.state = status == .enabled ? .on : .off
+        loginCheckbox?.state = loginItem.state
         log("login item: \(status == .enabled ? "enabled" : "not enabled (status \(status.rawValue))")")
     }
 
@@ -601,8 +752,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         labelField.setFrameOrigin(NSPoint(x: 8, y: 4))
         let inWindow = bubble.convert(bubble.bounds, to: nil)
         let onScreen = panel.convertToScreen(inWindow)
-        labelPanel.setFrame(NSRect(x: onScreen.maxX + 4, y: onScreen.midY - size.height / 2,
-                                   width: size.width, height: size.height), display: true)
+        var origin: NSPoint
+        switch Position.current {
+        case .left: origin = NSPoint(x: onScreen.maxX + 4, y: onScreen.midY - size.height / 2)
+        case .right: origin = NSPoint(x: onScreen.minX - 4 - size.width, y: onScreen.midY - size.height / 2)
+        case .bottomLeft, .bottomRight: origin = NSPoint(x: onScreen.midX - size.width / 2, y: onScreen.maxY + 4)
+        case .notch: origin = NSPoint(x: onScreen.midX - size.width / 2, y: onScreen.minY - 4 - size.height)
+        }
+        if let bounds = panel.screen?.frame ?? NSScreen.screens.first?.frame {
+            origin.x = min(max(origin.x, bounds.minX + 4), bounds.maxX - 4 - size.width)
+        }
+        labelPanel.setFrame(NSRect(origin: origin, size: size), display: true)
         labelPanel.orderFrontRegardless()
     }
 
