@@ -52,7 +52,10 @@ Right-click a bubble → **Settings…**
 ## Agent bubbles (Orca)
 
 When [Orca](https://github.com/stablyai/orca) is running, a second row of bubbles sits in the
-bottom-right corner, one per coding agent Orca runs (Claude Code, Codex, …).
+bottom-right corner, one per coding agent Orca runs (Claude Code, Codex, …). Settings has a
+position for it apart from the Chrome profiles: bottom right or left, top right or left (under
+the menu bar), in the menu bar left or right of the notch, or the right or left edge. **Long
+badges** show each agent's title next to its icon. Either set of bubbles can be turned off.
 
 - The ring shows the state: blue working (an arc runs around it), orange needs approval, yellow
   waiting for you, green done. One sound plays when an agent finishes and a different one when

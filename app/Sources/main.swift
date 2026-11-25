@@ -284,18 +284,22 @@ func installHotKeys() {
 // MARK: - Bubble
 
 enum Position: String, CaseIterable {
-    case left, right, notch, bottomLeft, bottomRight
+    case left, right, notch, leftOfNotch, rightOfNotch, bottomLeft, bottomRight
 
     var title: String {
         switch self {
         case .left: return tr("Left edge", "Mép trái")
         case .right: return tr("Right edge", "Mép phải")
-        case .notch: return tr("Around the notch", "Quanh tai thỏ")
+        case .notch: return tr("Around the notch (both sides)", "Quanh tai thỏ (hai bên)")
+        case .leftOfNotch: return tr("Left of the notch", "Bên trái tai thỏ")
+        case .rightOfNotch: return tr("Right of the notch", "Bên phải tai thỏ")
         case .bottomLeft: return tr("Bottom left", "Góc dưới trái")
         case .bottomRight: return tr("Bottom right", "Góc dưới phải")
         }
     }
     var isSideColumn: Bool { self == .left || self == .right }
+    /// In the menu bar strip beside the notch.
+    var inMenuBar: Bool { self == .notch || self == .leftOfNotch || self == .rightOfNotch }
 
     static var current: Position {
         Position(rawValue: UserDefaults.standard.string(forKey: "position") ?? "") ?? .left
@@ -481,6 +485,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         p.hidesOnDeactivate = false
         p.isFloatingPanel = true
+        // After isFloatingPanel, which resets the level to .floating. Only a level above the menu
+        // bar lets the panel sit in the menu bar strip (around the notch) instead of being pushed below it.
+        p.level = .statusBar
         return p
     }
 
@@ -540,7 +547,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func targetScreen(for position: Position) -> NSScreen? {
-        if position == .notch, let notched = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) {
+        if position.inMenuBar, let notched = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) {
             return notched
         }
         return NSScreen.screens.first ?? NSScreen.main
@@ -549,6 +556,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Builds the bubbles for the chosen position and size, and puts the panel in place.
     func layout() {
         let position = Position.current
+        guard AgentsController.shared.profilesShown else {
+            hideLabel()
+            panel.orderOut(nil)
+            AgentsController.shared.layout()
+            return
+        }
         guard let screen = targetScreen(for: position), count > 0 else { return }
         let visible = screen.visibleFrame
         var size = preferredBubbleSize
@@ -571,14 +584,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // the corners free, and the panel floats above the Dock if they ever overlap.
             frame = NSRect(x: x, y: screen.frame.minY + edgeGap, width: width, height: size)
             origins = (0..<count).map { NSPoint(x: CGFloat($0) * size, y: 0) }
-        case .notch:
+        case .notch, .leftOfNotch, .rightOfNotch:
             if screen.safeAreaInsets.top > 0, let left = screen.auxiliaryTopLeftArea,
                let right = screen.auxiliaryTopRightArea, right.minX > left.maxX {
-                // Inside the menu bar strip: first half hugs the notch's left side, the rest its right side.
+                // Inside the menu bar strip, hugging the notch: all on one side, or the first half
+                // on its left and the rest on its right.
                 size = screen.safeAreaInsets.top
-                let leftCount = (count + 1) / 2
+                let leftCount = position == .leftOfNotch ? count : position == .rightOfNotch ? 0 : (count + 1) / 2
                 let notchWidth = right.minX - left.maxX
                 let leftWidth = CGFloat(leftCount) * size
+                AgentsController.profileNotchLeft = leftWidth
+                AgentsController.profileNotchRight = CGFloat(count - leftCount) * size
                 frame = NSRect(x: left.maxX - leftWidth, y: screen.frame.maxY - size,
                                width: leftWidth + notchWidth + CGFloat(count - leftCount) * size, height: size)
                 origins = (0..<count).map { index in
@@ -593,6 +609,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        if !(position.inMenuBar && screen.safeAreaInsets.top > 0) {
+            AgentsController.profileNotchLeft = 0
+            AgentsController.profileNotchRight = 0
+        }
         let content = NSView(frame: NSRect(origin: .zero, size: frame.size))
         for (index, profile) in profiles.enumerated() {
             let bubble = BubbleView(profile: profile, size: size)
@@ -604,6 +624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hideLabel()
         panel.contentView = content
         panel.setFrame(frame, display: true)
+        panel.orderFrontRegardless()
         AgentsController.shared.layout()
         log("layout: \(position.rawValue), bubble \(Int(size)) pt, frame \(Int(frame.minX)),\(Int(frame.minY)) \(Int(frame.width))x\(Int(frame.height)), screen \(Int(screen.frame.width))x\(Int(screen.frame.height))")
     }
@@ -637,9 +658,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             login.state = SMAppService.mainApp.status == .enabled ? .on : .off
             loginCheckbox = login
 
-            let agents = NSButton(checkboxWithTitle: tr("Agent bubbles (Orca), bottom right", "Bong bóng agent (Orca), góc dưới phải"),
+            let profilesBox = NSButton(checkboxWithTitle: tr("Show Chrome profile bubbles", "Hiện bong bóng Chrome profile"),
+                                       target: self, action: #selector(toggleProfiles(_:)))
+            profilesBox.state = AgentsController.shared.profilesShown ? .on : .off
+
+            let agents = NSButton(checkboxWithTitle: tr("Show agent bubbles (Orca and Claude)", "Hiện bong bóng agent (Orca và Claude)"),
                                   target: self, action: #selector(toggleAgents(_:)))
             agents.state = AgentsController.enabled ? .on : .off
+
+            let agentPositionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+            agentPositionPopup.addItems(withTitles: AgentPosition.allCases.map(\.title))
+            agentPositionPopup.selectItem(at: AgentPosition.allCases.firstIndex(of: AgentPosition.current) ?? 0)
+            agentPositionPopup.target = self
+            agentPositionPopup.action = #selector(agentPositionChanged(_:))
+
+            let badges = NSButton(checkboxWithTitle: tr("Long badges with the agent's title", "Nhãn dài có tên agent"),
+                                  target: self, action: #selector(toggleAgentBadges(_:)))
+            badges.state = AgentPosition.badges ? .on : .off
 
             let sound = NSButton(checkboxWithTitle: tr("Play sounds when an agent finishes or needs you", "Phát âm thanh khi agent chạy xong hoặc cần bạn"),
                                  target: self, action: #selector(toggleAgentSound(_:)))
@@ -686,25 +721,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             hint.textColor = .secondaryLabelColor
             hint.preferredMaxLayoutWidth = 230
 
-            let grid = NSGridView(views: [
+            func header(_ text: String) -> NSTextField {
+                let label = NSTextField(labelWithString: text)
+                label.font = .systemFont(ofSize: 13, weight: .semibold)
+                return label
+            }
+            let empty = NSGridCell.emptyContentView
+            let rows: [[NSView]] = [
+                [header(tr("Chrome profiles", "Chrome profile")), empty],
+                [empty, profilesBox],
                 [NSTextField(labelWithString: tr("Position:", "Vị trí:")), positionPopup],
-                [NSTextField(labelWithString: tr("Bubble size:", "Cỡ bong bóng:")), sizePopup],
-                [NSGridCell.emptyContentView, login],
-                [NSGridCell.emptyContentView, agents],
-                [NSGridCell.emptyContentView, claude],
-                [NSGridCell.emptyContentView, sound],
+                [empty, hint],
+                [header(tr("Agents", "Agent")), empty],
+                [empty, agents],
+                [NSTextField(labelWithString: tr("Position:", "Vị trí:")), agentPositionPopup],
+                [empty, badges],
+                [empty, claude],
+                [empty, sound],
                 [NSTextField(labelWithString: tr("When finished:", "Khi xong:")), finishedPopup],
                 [NSTextField(labelWithString: tr("When it needs you:", "Khi cần bạn:")), needsYouPopup],
-                [NSGridCell.emptyContentView, ownSounds],
+                [empty, ownSounds],
                 [NSTextField(labelWithString: tr("Quick prompts:", "Lệnh nhanh:")), prompts],
-                [NSGridCell.emptyContentView, promptsHint],
-                [NSGridCell.emptyContentView, hint]])
+                [empty, promptsHint],
+                [header(tr("General", "Chung")), empty],
+                [NSTextField(labelWithString: tr("Bubble size:", "Cỡ bong bóng:")), sizePopup],
+                [empty, login]]
+            let grid = NSGridView(views: rows)
+            for (index, row) in rows.enumerated() where row[1] === empty {
+                grid.row(at: index).mergeCells(in: NSRange(location: 0, length: 2))
+                grid.row(at: index).topPadding = index == 0 ? 0 : 12
+                grid.cell(atColumnIndex: 0, rowIndex: index).xPlacement = .leading
+            }
             grid.column(at: 0).xPlacement = .trailing
             grid.rowSpacing = 10
             grid.columnSpacing = 8
             grid.translatesAutoresizingMaskIntoConstraints = false
 
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 490),
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 660),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = tr("Profile Bubbles Settings", "Cài đặt Profile Bubbles")
             window.isReleasedWhenClosed = false
@@ -716,6 +769,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 grid.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
                 grid.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20)])
             window.contentView = content
+            window.setContentSize(content.fittingSize)   // exactly as tall as the rows, no stretched gaps
             window.center()
             settingsWindow = window
         }
@@ -723,6 +777,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
         log("settings: window shown")
+    }
+
+    @objc private func toggleProfiles(_ sender: NSButton) {
+        UserDefaults.standard.set(sender.state == .on, forKey: "profilesEnabled")
+        layout()
+    }
+
+    @objc private func toggleAgentBadges(_ sender: NSButton) {
+        UserDefaults.standard.set(sender.state == .on, forKey: AgentPosition.badgesKey)
+        AgentsController.shared.layout()
+    }
+
+    @objc private func agentPositionChanged(_ sender: NSPopUpButton) {
+        let position = AgentPosition.allCases[max(0, sender.indexOfSelectedItem)]
+        UserDefaults.standard.set(position.rawValue, forKey: AgentPosition.key)
+        AgentsController.shared.layout()
     }
 
     @objc private func positionChanged(_ sender: NSPopUpButton) {
@@ -860,7 +930,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .left: origin = NSPoint(x: onScreen.maxX + 4, y: onScreen.midY - size.height / 2)
         case .right: origin = NSPoint(x: onScreen.minX - 4 - size.width, y: onScreen.midY - size.height / 2)
         case .bottomLeft, .bottomRight: origin = NSPoint(x: onScreen.midX - size.width / 2, y: onScreen.maxY + 4)
-        case .notch: origin = NSPoint(x: onScreen.midX - size.width / 2, y: onScreen.minY - 4 - size.height)
+        case .notch, .leftOfNotch, .rightOfNotch: origin = NSPoint(x: onScreen.midX - size.width / 2, y: onScreen.minY - 4 - size.height)
         }
         if let bounds = panel.screen?.frame ?? NSScreen.screens.first?.frame {
             origin.x = min(max(origin.x, bounds.minX + 4), bounds.maxX - 4 - size.width)

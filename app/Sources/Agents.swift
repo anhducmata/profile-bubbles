@@ -280,6 +280,40 @@ func shortLabel(_ label: String, limit: Int = 30) -> String {
     return text.count > limit ? String(text.prefix(limit - 1)) + "…" : text
 }
 
+// MARK: - Position
+
+/// Where the agent row sits; set apart from the Chrome profile bubbles' position.
+enum AgentPosition: String, CaseIterable {
+    case bottomRight, bottomLeft, topRight, topLeft, leftOfNotch, rightOfNotch, rightEdge, leftEdge
+    static let key = "agentPosition"
+    static let badgesKey = "agentBadges"
+    /// Long badges with the agent's title instead of round bubbles.
+    static var badges: Bool { UserDefaults.standard.bool(forKey: badgesKey) }
+
+    var title: String {
+        switch self {
+        case .bottomRight: return tr("Bottom right", "Góc dưới phải")
+        case .bottomLeft: return tr("Bottom left", "Góc dưới trái")
+        case .topRight: return tr("Top right, under the menu bar", "Góc trên phải, dưới thanh menu")
+        case .topLeft: return tr("Top left, under the menu bar", "Góc trên trái, dưới thanh menu")
+        case .leftOfNotch: return tr("Menu bar, left of the notch", "Thanh menu, bên trái tai thỏ")
+        case .rightOfNotch: return tr("Menu bar, right of the notch", "Thanh menu, bên phải tai thỏ")
+        case .rightEdge: return tr("Right edge", "Mép phải")
+        case .leftEdge: return tr("Left edge", "Mép trái")
+        }
+    }
+    var isColumn: Bool { self == .rightEdge || self == .leftEdge }
+    var inMenuBar: Bool { self == .leftOfNotch || self == .rightOfNotch }
+    /// Which way the row grows: from the right end (true) or the left end.
+    var isRight: Bool { self == .bottomRight || self == .topRight || self == .rightEdge || self == .leftOfNotch }
+    /// Bar and card open below the row.
+    var isTop: Bool { self == .topRight || self == .topLeft || inMenuBar }
+
+    static var current: AgentPosition {
+        AgentPosition(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .bottomRight
+    }
+}
+
 // MARK: - Views
 
 /// A floating panel that can take the keyboard (for the reply box) without activating this app.
@@ -296,6 +330,9 @@ func makeFloatingPanel(takesKeyboard: Bool = false) -> NSPanel {
     p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
     p.hidesOnDeactivate = false
     p.isFloatingPanel = true
+    // After isFloatingPanel, which resets the level to .floating. Only a level above the menu
+    // bar lets the panel sit in the menu bar strip (around the notch) instead of being pushed below it.
+    p.level = .statusBar
     if takesKeyboard {
         p.becomesKeyOnlyIfNeeded = true
         p.appearance = NSAppearance(named: .darkAqua)
@@ -316,12 +353,28 @@ final class AgentBubbleView: NSView {
     private var hovering = false { didSet { needsDisplay = true; updateSpinner() } }
     private var spinner: CAShapeLayer?
     private var spins: Bool { agent.state == "working" && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-    private var ringInset: CGFloat { bounds.width * (hovering ? 0.06 : 0.115) }
+    private var ringInset: CGFloat { bounds.height * (hovering ? 0.06 : 0.115) }
+    /// A long badge (round icon, then the title) when wider than tall.
+    private var isBadge: Bool { bounds.width > bounds.height + 1 }
+    /// The round part: the whole view for a bubble, its left end for a badge.
+    private var circleRect: NSRect {
+        NSRect(x: 0, y: 0, width: bounds.height, height: bounds.height).insetBy(dx: ringInset, dy: ringInset)
+    }
 
-    init(agent: Agent, size: CGFloat) {
+    init(agent: Agent, size: CGFloat, width: CGFloat? = nil) {
         self.agent = agent
-        super.init(frame: NSRect(x: 0, y: 0, width: size, height: size))
+        super.init(frame: NSRect(x: 0, y: 0, width: width ?? size, height: size))
         wantsLayer = true
+        toolTip = isBadge ? agent.displayTitle : nil
+    }
+
+    static func titleFont(height: CGFloat) -> NSFont { .systemFont(ofSize: min(13, max(11, height * 0.3)), weight: .medium) }
+
+    /// Width of an agent's long badge: icon, title (cut at `maxWidth`), and room for the "!" mark.
+    static func badgeWidth(for agent: Agent, height: CGFloat, maxWidth: CGFloat = 230) -> CGFloat {
+        let text = (agent.displayTitle as NSString).size(withAttributes: [.font: titleFont(height: height)]).width
+        let mark = agent.needsYou ? height * 0.55 : 0
+        return min(maxWidth, ceil(height + 4 + text + 12 + mark))
     }
 
     override func viewDidMoveToWindow() {
@@ -355,7 +408,7 @@ final class AgentBubbleView: NSView {
         CATransaction.setDisableActions(true)
         arc.frame = bounds
         arc.lineWidth = 2.5
-        arc.path = CGPath(ellipseIn: bounds.insetBy(dx: ringInset + 1.25, dy: ringInset + 1.25), transform: nil)
+        arc.path = CGPath(ellipseIn: circleRect.insetBy(dx: 1.25, dy: 1.25), transform: nil)
         CATransaction.commit()
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -368,8 +421,37 @@ final class AgentBubbleView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let rect = bounds.insetBy(dx: ringInset, dy: ringInset)
+        let rect = circleRect
         let circle = NSBezierPath(ovalIn: rect)
+
+        if isBadge {
+            // The pill behind the icon and the title; its outline carries the state colour.
+            let pillRect = NSRect(x: rect.minX, y: rect.minY, width: bounds.width - rect.minX - 2, height: rect.height)
+            let pill = NSBezierPath(roundedRect: pillRect, xRadius: rect.height / 2, yRadius: rect.height / 2)
+            NSGraphicsContext.saveGraphicsState()
+            let shadow = NSShadow()
+            shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
+            shadow.shadowBlurRadius = 3
+            shadow.shadowOffset = NSSize(width: 0, height: -1)
+            shadow.set()
+            NSColor(white: hovering ? 0.18 : 0.13, alpha: 0.96).setFill()
+            pill.fill()
+            NSGraphicsContext.restoreGraphicsState()
+            agent.stateColor.withAlphaComponent(agent.needsYou ? 0.9 : 0.35).setStroke()
+            pill.lineWidth = agent.needsYou ? 1.5 : 1
+            pill.stroke()
+
+            let mark = agent.needsYou ? rect.height * 0.55 : 0
+            let font = AgentBubbleView.titleFont(height: bounds.height)
+            let style = NSMutableParagraphStyle()
+            style.lineBreakMode = .byTruncatingTail
+            let title = NSAttributedString(string: agent.displayTitle, attributes: [
+                .font: font, .foregroundColor: NSColor.white.withAlphaComponent(0.92), .paragraphStyle: style])
+            let textHeight = ceil(font.ascender - font.descender)
+            title.draw(with: NSRect(x: rect.maxX + 4, y: rect.midY - textHeight / 2 - font.descender,
+                                    width: pillRect.maxX - rect.maxX - 4 - 8 - mark, height: textHeight),
+                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        }
 
         NSGraphicsContext.saveGraphicsState()
         let shadow = NSShadow()
@@ -397,8 +479,9 @@ final class AgentBubbleView: NSView {
         ring.stroke()
 
         if agent.needsYou {
-            let d = bounds.width * 0.3
-            let badge = NSRect(x: bounds.maxX - d - 1, y: bounds.maxY - d - 1, width: d, height: d)
+            let d = isBadge ? rect.height * 0.55 : bounds.width * 0.3
+            let badge = isBadge ? NSRect(x: bounds.maxX - 2 - rect.height * 0.2 - d, y: rect.midY - d / 2, width: d, height: d)
+                                : NSRect(x: bounds.maxX - d - 1, y: bounds.maxY - d - 1, width: d, height: d)
             agent.stateColor.setFill()
             NSBezierPath(ovalIn: badge).fill()
             let mark = (agent.state == "blocked" ? "!" : "?") as NSString
@@ -470,6 +553,12 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
     private var cardInput: String??          // input box text of the hovered agent; nil until read
     private var cardTimer: Timer?
     private var cardTicks = 0
+    private var bubbleFrames: [String: NSRect] = [:]   // screen frame of each agent's bubble
+    /// Width the profile bubbles take on each side of the notch (set by the profile layout).
+    static var profileNotchLeft: CGFloat = 0
+    static var profileNotchRight: CGFloat = 0
+    /// Whether the Chrome profile bubbles are on screen (the agent row then avoids them).
+    var profilesShown: Bool { UserDefaults.standard.object(forKey: "profilesEnabled") as? Bool ?? true }
     private var lastInputNote = ""
     private var cardActivity = ""            // live terminal lines of the hovered working agent
     /// Finished agents the user took off the row. One comes back when it starts working again.
@@ -604,22 +693,65 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
             hideCard()
             return
         }
-        let size = preferredBubbleSize
-        let width = CGFloat(agents.count) * size
-        // Above the profile bubbles when they use the same corner.
-        let lift: CGFloat = Position.current == .bottomRight ? size + gap : 0
-        let frame = NSRect(x: screen.frame.maxX - gap - width, y: screen.frame.minY + gap + lift, width: width, height: size)
+        let position = AgentPosition.current
+        let profiles = Position.current
+        let full = screen.frame, visible = screen.visibleFrame
+        // In the menu bar the bubbles are as tall as the bar, like the profile bubbles at the notch.
+        let menuBar = screen.safeAreaInsets.top > 0 ? screen.safeAreaInsets.top : full.maxY - visible.maxY
+        let size = position.inMenuBar ? menuBar : preferredBubbleSize
+        let widths = agents.map { AgentPosition.badges ? AgentBubbleView.badgeWidth(for: $0, height: size) : size }
+        let total = widths.reduce(0, +)
+        var frame: NSRect
+        switch position {
+        case .rightEdge, .leftEdge:
+            // Next to the profile column when both use the same edge.
+            let shared = profilesShown && profiles == (position.isRight ? .right : .left)
+            let inset = gap + (shared ? preferredBubbleSize + gap : 0)
+            let width = widths.max() ?? size
+            let height = CGFloat(agents.count) * size
+            let x = position.isRight ? visible.maxX - inset - width : visible.minX + inset
+            frame = NSRect(x: x, y: visible.midY - height / 2, width: width, height: height)
+        case .leftOfNotch, .rightOfNotch:
+            // Against the notch, or beyond the profile bubbles when they are at the notch too.
+            let left = screen.auxiliaryTopLeftArea, right = screen.auxiliaryTopRightArea
+            let notchLeft = left?.maxX ?? full.midX - 1, notchRight = right?.minX ?? full.midX + 1
+            let taken = profilesShown && profiles.inMenuBar
+                ? (position == .leftOfNotch ? AgentsController.profileNotchLeft : AgentsController.profileNotchRight) : 0
+            let x = position == .leftOfNotch ? notchLeft - taken - total : notchRight + taken
+            frame = NSRect(x: x, y: full.maxY - size, width: total, height: size)
+        case .topRight, .topLeft:
+            frame = NSRect(x: position.isRight ? full.maxX - gap - total : full.minX + gap,
+                           y: visible.maxY - gap - size, width: total, height: size)
+        case .bottomRight, .bottomLeft:
+            // Above the profile bubbles when they use the same corner.
+            let shared = profilesShown && profiles == (position.isRight ? .bottomRight : .bottomLeft)
+            frame = NSRect(x: position.isRight ? full.maxX - gap - total : full.minX + gap,
+                           y: full.minY + gap + (shared ? preferredBubbleSize + gap : 0), width: total, height: size)
+        }
         let content = NSView(frame: NSRect(origin: .zero, size: frame.size))
+        bubbleFrames = [:]
+        var offset: CGFloat = 0
         for (index, agent) in agents.enumerated() {
-            let bubble = AgentBubbleView(agent: agent, size: size)
+            let bubble = AgentBubbleView(agent: agent, size: size, width: widths[index])
             bubble.controller = self
-            bubble.setFrameOrigin(NSPoint(x: width - CGFloat(index + 1) * size, y: 0))   // first one in the corner
+            // The first agent (the one most likely to need you) sits in the corner, next to the
+            // notch, or at the top of a column.
+            let w = widths[index]
+            let origin: NSPoint
+            if position.isColumn {
+                origin = NSPoint(x: position.isRight ? frame.width - w : 0, y: frame.height - CGFloat(index + 1) * size)
+            } else {
+                origin = NSPoint(x: position.isRight ? frame.width - offset - w : offset, y: 0)
+                offset += w
+            }
+            bubble.setFrameOrigin(origin)
             content.addSubview(bubble)
+            bubbleFrames[agent.id] = NSRect(origin: NSPoint(x: frame.minX + origin.x, y: frame.minY + origin.y), size: bubble.frame.size)
         }
         rowPanel.contentView = content
         rowPanel.setFrame(frame, display: true)
         rowPanel.orderFrontRegardless()
-        layoutBar(above: frame, screen: screen)
+        layoutBar(beside: frame, screen: screen)
         if cardAgentID != nil && !replying { renderCard() }   // keep an open card in step with the new state
     }
 
@@ -646,7 +778,7 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
     }
 
     /// One bar per agent that needs the user: title, question, then a button per option.
-    private func layoutBar(above row: NSRect, screen: NSScreen) {
+    private func layoutBar(beside row: NSRect, screen: NSScreen) {
         let waiting = agents.filter(\.needsYou)
         guard !waiting.isEmpty else { barPanel.orderOut(nil); return }
         let rowHeight: CGFloat = 34
@@ -675,17 +807,33 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
             bar.frame = NSRect(x: 0, y: 0, width: x + 4, height: rowHeight)
             bars.append(bar)
         }
-        let limit = screen.frame.width - gap * 2
+        let position = AgentPosition.current
+        let full = screen.frame
+        // A column has its bars beside it; a row has them above (bottom) or below (top).
+        let limit = position.isColumn ? (position.isRight ? row.minX - gap - full.minX - gap : full.maxX - gap - row.maxX - gap)
+                                      : full.width - gap * 2
         let width = min(bars.map(\.frame.width).max() ?? 0, limit)
         let height = CGFloat(bars.count) * (rowHeight + gap) - gap
+        // The first bar sits nearest the row.
+        let growsDown = position.isTop || position.isColumn
         let content = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         for (index, bar) in bars.enumerated() {
             bar.frame.size.width = min(bar.frame.width, limit)
-            bar.setFrameOrigin(NSPoint(x: width - bar.frame.width, y: CGFloat(index) * (rowHeight + gap)))   // first one lowest
+            let y = growsDown ? height - CGFloat(index + 1) * rowHeight - CGFloat(index) * gap : CGFloat(index) * (rowHeight + gap)
+            bar.setFrameOrigin(NSPoint(x: position.isRight ? width - bar.frame.width : 0, y: y))
             content.addSubview(bar)
         }
+        var x: CGFloat, y: CGFloat
+        if position.isColumn {
+            x = position.isRight ? row.minX - gap - width : row.maxX + gap
+            y = row.maxY - height
+        } else {
+            x = position.isRight ? full.maxX - gap - width : full.minX + gap
+            y = position.isTop ? row.minY - gap - height : row.maxY + gap
+        }
+        y = min(max(y, full.minY + gap), full.maxY - gap - height)
         barPanel.contentView = content
-        barPanel.setFrame(NSRect(x: screen.frame.maxX - gap - width, y: row.maxY + gap, width: width, height: height), display: true)
+        barPanel.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
         barPanel.orderFrontRegardless()
     }
 
@@ -821,9 +969,7 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
     // MARK: Hover card
 
     private func bubbleRect(_ id: String) -> NSRect? {
-        guard let index = agents.firstIndex(where: { $0.id == id }), rowPanel.isVisible else { return nil }
-        let size = rowPanel.frame.height
-        return NSRect(x: rowPanel.frame.maxX - CGFloat(index + 1) * size, y: rowPanel.frame.minY, width: size, height: size)
+        rowPanel.isVisible ? bubbleFrames[id] : nil
     }
 
     func showCard(for id: String) {
@@ -1025,13 +1171,22 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
         content.frame = card.bounds
         card.addSubview(content)
         card.onClick = { [weak self] in self?.perform(.open, on: agent) }
-        var originX = bubble.maxX - width
-        if let bounds = rowPanel.screen?.frame ?? NSScreen.screens.first?.frame {
-            originX = min(max(originX, bounds.minX + 4), bounds.maxX - 4 - width)
+        // Touching the bubble, on the side away from the screen edge, so the pointer can move
+        // from the bubble onto the card. It covers the approval bar while it is open.
+        let position = AgentPosition.current
+        var origin: NSPoint
+        if position.isColumn {
+            origin = NSPoint(x: position.isRight ? bubble.minX - width : bubble.maxX, y: bubble.maxY - y)
+        } else {
+            origin = NSPoint(x: position.isRight ? bubble.maxX - width : bubble.minX,
+                             y: position.isTop ? bubble.minY - y : bubble.maxY)
         }
-        // Directly above the row (over the approval bar while it is open), so the pointer can reach it.
+        if let bounds = rowPanel.screen?.frame ?? NSScreen.screens.first?.frame {
+            origin.x = min(max(origin.x, bounds.minX + 4), bounds.maxX - 4 - width)
+            origin.y = min(max(origin.y, bounds.minY + 4), bounds.maxY - 4 - y)
+        }
         cardPanel.contentView = card
-        cardPanel.setFrame(NSRect(x: originX, y: bubble.maxY, width: width, height: y), display: true)
+        cardPanel.setFrame(NSRect(origin: origin, size: NSSize(width: width, height: y)), display: true)
         cardPanel.orderFrontRegardless()
     }
 }
