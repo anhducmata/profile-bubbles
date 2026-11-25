@@ -73,6 +73,9 @@ Hover a bubble for a card with the agent's last message and its suggested next a
 
 Clicking the bubble, or the card itself, opens the agent's tab in Orca.
 
+A finished agent's card has a **✕ Remove** button that takes its bubble off the row. The bubble
+comes back when that agent starts working again.
+
 The card also has a reply box: type and press Return to send your own message to the agent (it is
 queued when the agent is working, and goes through the menu's "Type something" option when a
 question is open). Escape closes the card. If the screen changed before sending, the text is put on
