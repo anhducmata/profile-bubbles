@@ -92,9 +92,22 @@ enum Orca {
         return root["result"] as? [String: Any]
     }
 
-    static func screen(of handle: String) -> [String] {
-        let result = run(["terminal", "read", "--terminal", handle, "--screen"])
-        return (result?["terminal"] as? [String: Any])?["tail"] as? [String] ?? []
+    static func screen(of handle: String) -> [String] { read(handle).screen }
+
+    /// The rendered screen, plus the text of the agent's input box when Orca reports it apart
+    /// from the screen (`draft`, which it leaves out of the screen lines).
+    static func read(_ handle: String) -> (screen: [String], draft: String) {
+        let terminal = run(["terminal", "read", "--terminal", handle, "--screen"])?["terminal"] as? [String: Any]
+        return (terminal?["tail"] as? [String] ?? [], (terminal?["draft"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// What the agent's input box holds: a draft or the next prompt it suggests. "" when the box
+    /// is empty, nil when no box is on screen. `source` says where it was found, for the log.
+    static func input(of handle: String) -> (screen: [String], text: String?, source: String) {
+        let (screen, draft) = read(handle)
+        if !draft.isEmpty { return (screen, draft, "draft") }
+        let parsed = inputText(screen)
+        return (screen, parsed, parsed == nil ? "none" : "screen")
     }
 
     static func activateApp() {
@@ -434,6 +447,8 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
     private var cardAgentID: String?
     private var cardInput: String??          // input box text of the hovered agent; nil until read
     private var cardTimer: Timer?
+    private var cardTicks = 0
+    private var lastInputNote = ""
     private let queue = DispatchQueue(label: "agents.poll")
     private var agents: [Agent] = []
     private var polling = false
@@ -711,7 +726,7 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
         case .submitInput, .prompt, .interrupt:
             queue.async { [weak self] in
                 let screen = Orca.screen(of: handle)
-                let box = inputText(screen)
+                let box = Orca.input(of: handle).text
                 var args: [String]?
                 var name = ""
                 switch action {
@@ -752,24 +767,37 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
         cardAgentID = id
         cardInput = nil
         renderCard()
-        if let agent = agents.first(where: { $0.id == id }), let handle = agent.handle, agent.prompt == nil, agent.state != "working" {
-            queue.async { [weak self] in
-                let input = inputText(Orca.screen(of: handle))
-                DispatchQueue.main.async {
-                    guard let self = self, self.cardAgentID == id else { return }
-                    self.cardInput = .some(input)
-                    if !self.replying { self.renderCard() }
-                }
-            }
-        }
+        cardTicks = 0
+        lastInputNote = ""
+        refreshCardInput()
         cardTimer?.invalidate()
         cardTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.watchCard() }
     }
 
     /// The card stays while the pointer is over it or its bubble. Checked by position, since the
     /// bubble views are rebuilt on every state change and would lose their exit events.
+    /// Reads the hovered agent's input box. Called when the card opens and every 1.5 s while it
+    /// stays open, because the agent's suggested next prompt appears a few seconds after it finishes.
+    private func refreshCardInput() {
+        guard let id = cardAgentID, let agent = agents.first(where: { $0.id == id }), let handle = agent.handle,
+              agent.prompt == nil, agent.state != "working" else { return }
+        queue.async { [weak self] in
+            let found = Orca.input(of: handle)
+            DispatchQueue.main.async {
+                guard let self = self, self.cardAgentID == id else { return }
+                let note = "\(found.source) \(found.text?.count ?? 0) chars"   // never the text itself
+                if note != self.lastInputNote { self.lastInputNote = note; log("agents: input box: \(note)") }
+                if case .some(let old) = self.cardInput, old == found.text { return }
+                self.cardInput = .some(found.text)
+                if !self.replying { self.renderCard() }
+            }
+        }
+    }
+
     private func watchCard() {
         guard let id = cardAgentID, let bubble = bubbleRect(id) else { hideCard(); return }
+        cardTicks += 1
+        if cardTicks % 8 == 0 { refreshCardInput() }
         if replying { return }   // typing a reply: Escape, sending, or a click elsewhere ends it
         let mouse = NSEvent.mouseLocation
         if !bubble.insetBy(dx: -2, dy: -2).contains(mouse) && !cardPanel.frame.insetBy(dx: -4, dy: -4).contains(mouse) { hideCard() }
@@ -818,7 +846,7 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
                     ok = ok && send(["--enter"])
                     outcome = ok ? "sent through menu option \(option.number)" : "send failed"
                 }
-            } else if inputText(screen) == "" {
+            } else if Orca.input(of: handle).text == "" {
                 outcome = send(["--text", text, "--enter"]) ? "sent" : "send failed"
             }
             log("agents: reply (\(text.count) chars): \(outcome)")
