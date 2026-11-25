@@ -457,6 +457,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         rebuild(force: true)
         panel.orderFrontRegardless()
+        AgentsController.shared.start()
 
         if CommandLine.arguments.contains("--settings") { showSettings() }
         // Test hook: `--activate "<profile dir>"` acts as a click on that bubble right after launch.
@@ -603,6 +604,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hideLabel()
         panel.contentView = content
         panel.setFrame(frame, display: true)
+        AgentsController.shared.layout()
         log("layout: \(position.rawValue), bubble \(Int(size)) pt, frame \(Int(frame.minX)),\(Int(frame.minY)) \(Int(frame.width))x\(Int(frame.height)), screen \(Int(screen.frame.width))x\(Int(screen.frame.height))")
     }
 
@@ -635,6 +637,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             login.state = SMAppService.mainApp.status == .enabled ? .on : .off
             loginCheckbox = login
 
+            let agents = NSButton(checkboxWithTitle: tr("Agent bubbles (Orca), bottom right", "Bong bóng agent (Orca), góc dưới phải"),
+                                  target: self, action: #selector(toggleAgents(_:)))
+            agents.state = AgentsController.enabled ? .on : .off
+
+            let sound = NSButton(checkboxWithTitle: tr("Play a sound when an agent finishes", "Phát âm thanh khi agent chạy xong"),
+                                 target: self, action: #selector(toggleAgentSound(_:)))
+            sound.state = AgentsController.soundEnabled ? .on : .off
+
+            let claude = NSButton(checkboxWithTitle: tr("Claude Code outside Orca", "Claude Code ngoài Orca"),
+                                  target: self, action: #selector(toggleClaudeHooks(_:)))
+            claude.state = claudeHooks("status") == "installed" ? .on : .off
+            claude.toolTip = tr("Adds hooks to ~/.claude/settings.json (a backup is kept). Sessions in Terminal, editors or the Claude app get a bubble; a click brings their app forward.",
+                                "Thêm hook vào ~/.claude/settings.json (có giữ bản sao lưu). Phiên trong Terminal, editor hay app Claude có bong bóng; bấm để đưa app đó lên trước.")
+
+            let prompts = NSTextField(string: quickPrompts.joined(separator: ", "))
+            prompts.placeholderString = "continue, commit"
+            prompts.target = self
+            prompts.action = #selector(quickPromptsChanged(_:))
+            prompts.widthAnchor.constraint(equalToConstant: 230).isActive = true
+            let promptsHint = NSTextField(wrappingLabelWithString: tr(
+                "Shown when you hover an idle agent; one click sends the prompt. Separate with commas, press Return to save.",
+                "Hiện khi rê chuột lên agent đang rảnh; bấm một lần là gửi. Cách nhau bằng dấu phẩy, nhấn Return để lưu."))
+            promptsHint.font = .systemFont(ofSize: 11)
+            promptsHint.textColor = .secondaryLabelColor
+            promptsHint.preferredMaxLayoutWidth = 230
+
             let hint = NSTextField(wrappingLabelWithString: tr(
                 "Left and right edge: drag a bubble up or down to move the column. Around the notch: bubbles sit in the menu bar and use its height.",
                 "Mép trái và mép phải: kéo một bong bóng lên xuống để dời cả cột. Quanh tai thỏ: bong bóng nằm trong thanh menu và cao bằng thanh menu."))
@@ -646,13 +674,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 [NSTextField(labelWithString: tr("Position:", "Vị trí:")), positionPopup],
                 [NSTextField(labelWithString: tr("Bubble size:", "Cỡ bong bóng:")), sizePopup],
                 [NSGridCell.emptyContentView, login],
+                [NSGridCell.emptyContentView, agents],
+                [NSGridCell.emptyContentView, claude],
+                [NSGridCell.emptyContentView, sound],
+                [NSTextField(labelWithString: tr("Quick prompts:", "Lệnh nhanh:")), prompts],
+                [NSGridCell.emptyContentView, promptsHint],
                 [NSGridCell.emptyContentView, hint]])
             grid.column(at: 0).xPlacement = .trailing
             grid.rowSpacing = 10
             grid.columnSpacing = 8
             grid.translatesAutoresizingMaskIntoConstraints = false
 
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 220),
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 390),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = tr("Profile Bubbles Settings", "Cài đặt Profile Bubbles")
             window.isReleasedWhenClosed = false
@@ -676,6 +709,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let position = Position.allCases[max(0, sender.indexOfSelectedItem)]
         UserDefaults.standard.set(position.rawValue, forKey: "position")
         layout()
+    }
+
+    @objc private func quickPromptsChanged(_ sender: NSTextField) {
+        let list = sender.stringValue.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        UserDefaults.standard.set(list, forKey: "agentQuickPrompts")   // empty list = back to the defaults
+        sender.stringValue = quickPrompts.joined(separator: ", ")
+    }
+
+    @objc private func toggleClaudeHooks(_ sender: NSButton) {
+        let result = claudeHooks(sender.state == .on ? "install" : "uninstall")
+        sender.state = result == "installed" ? .on : .off
+    }
+
+    @objc private func toggleAgentSound(_ sender: NSButton) {
+        UserDefaults.standard.set(sender.state == .on, forKey: AgentsController.soundKey)
+        if sender.state == .on { AgentsController.playFinishedSound() }   // so the user hears which sound it is
+    }
+
+    @objc private func toggleAgents(_ sender: NSButton) {
+        UserDefaults.standard.set(sender.state == .on, forKey: AgentsController.enabledKey)
+        AgentsController.shared.poll()
+        AgentsController.shared.layout()
     }
 
     @objc private func sizeChanged(_ sender: NSPopUpButton) {
@@ -773,6 +828,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 if CommandLine.arguments.contains("--dump") {
     for p in loadProfiles() { print("\(p.dir)\t\(p.name)\t\(p.picture == nil ? "letter" : "photo")") }
+    exit(0)
+}
+
+if CommandLine.arguments.contains("--claude-hook") {
+    runClaudeHook()
+    exit(0)
+}
+
+// Test hook: `--parse-screen <file>` prints the menu found in a saved terminal screen.
+if let i = CommandLine.arguments.firstIndex(of: "--parse-screen"), i + 1 < CommandLine.arguments.count {
+    let text = (try? String(contentsOfFile: CommandLine.arguments[i + 1], encoding: .utf8)) ?? ""
+    if let prompt = parsePrompt(text.components(separatedBy: "\n")) {
+        print("question: \(prompt.question)")
+        for o in prompt.options { print("\(o.number): \(shortLabel(o.label))\(needsTyping(o.label) ? "  [typing, no button]" : "")") }
+    } else {
+        print("no menu")
+    }
     exit(0)
 }
 
