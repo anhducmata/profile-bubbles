@@ -641,9 +641,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                   target: self, action: #selector(toggleAgents(_:)))
             agents.state = AgentsController.enabled ? .on : .off
 
-            let sound = NSButton(checkboxWithTitle: tr("Play a sound when an agent finishes", "Phát âm thanh khi agent chạy xong"),
+            let sound = NSButton(checkboxWithTitle: tr("Play sounds when an agent finishes or needs you", "Phát âm thanh khi agent chạy xong hoặc cần bạn"),
                                  target: self, action: #selector(toggleAgentSound(_:)))
             sound.state = AgentsController.soundEnabled ? .on : .off
+
+            // Choosing a sound plays it once.
+            let finishedPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+            finishedPopup.target = self
+            finishedPopup.action = #selector(soundChosen(_:))
+            finishedPopup.identifier = NSUserInterfaceItemIdentifier(SoundEvent.finished.rawValue)
+            let needsYouPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+            needsYouPopup.target = self
+            needsYouPopup.action = #selector(soundChosen(_:))
+            needsYouPopup.identifier = NSUserInterfaceItemIdentifier(SoundEvent.needsYou.rawValue)
+            soundPopups = [finishedPopup, needsYouPopup]
+            let ownSounds = NSButton(title: tr("Add your own sounds…", "Thêm âm thanh riêng…"), target: self, action: #selector(openSoundsFolder))
+            ownSounds.bezelStyle = .rounded
+            ownSounds.controlSize = .small
+            ownSounds.toolTip = tr("Opens the sounds folder. Put wav, aiff, mp3 or m4a files there and reopen Settings.",
+                                   "Mở thư mục âm thanh. Bỏ file wav, aiff, mp3 hoặc m4a vào rồi mở lại Cài đặt.")
 
             let claude = NSButton(checkboxWithTitle: tr("Claude Code outside Orca", "Claude Code ngoài Orca"),
                                   target: self, action: #selector(toggleClaudeHooks(_:)))
@@ -677,6 +693,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 [NSGridCell.emptyContentView, agents],
                 [NSGridCell.emptyContentView, claude],
                 [NSGridCell.emptyContentView, sound],
+                [NSTextField(labelWithString: tr("When finished:", "Khi xong:")), finishedPopup],
+                [NSTextField(labelWithString: tr("When it needs you:", "Khi cần bạn:")), needsYouPopup],
+                [NSGridCell.emptyContentView, ownSounds],
                 [NSTextField(labelWithString: tr("Quick prompts:", "Lệnh nhanh:")), prompts],
                 [NSGridCell.emptyContentView, promptsHint],
                 [NSGridCell.emptyContentView, hint]])
@@ -685,7 +704,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             grid.columnSpacing = 8
             grid.translatesAutoresizingMaskIntoConstraints = false
 
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 390),
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 490),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = tr("Profile Bubbles Settings", "Cài đặt Profile Bubbles")
             window.isReleasedWhenClosed = false
@@ -700,6 +719,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.center()
             settingsWindow = window
         }
+        refreshSoundPopups()   // files may have been added to the sounds folder since last time
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
         log("settings: window shown")
@@ -720,6 +740,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleClaudeHooks(_ sender: NSButton) {
         let result = claudeHooks(sender.state == .on ? "install" : "uninstall")
         sender.state = result == "installed" ? .on : .off
+    }
+
+    private var soundPopups: [NSPopUpButton] = []
+
+    private func refreshSoundPopups() {
+        let groups = AgentSound.groups
+        for popup in soundPopups {
+            guard let event = SoundEvent(rawValue: popup.identifier?.rawValue ?? "") else { continue }
+            popup.removeAllItems()
+            for group in groups where !group.isEmpty {
+                if popup.numberOfItems > 0 { popup.menu?.addItem(.separator()) }
+                popup.addItems(withTitles: group)
+            }
+            popup.selectItem(withTitle: event.chosen)
+        }
+    }
+
+    @objc private func soundChosen(_ sender: NSPopUpButton) {
+        guard let event = SoundEvent(rawValue: sender.identifier?.rawValue ?? ""), let name = sender.titleOfSelectedItem else { return }
+        UserDefaults.standard.set(name, forKey: event.rawValue)
+        AgentSound.play(name)
+    }
+
+    @objc private func openSoundsFolder() {
+        try? FileManager.default.createDirectory(atPath: AgentSound.customDir, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(URL(fileURLWithPath: AgentSound.customDir))
     }
 
     @objc private func toggleAgentSound(_ sender: NSButton) {
