@@ -74,8 +74,11 @@ func runClaudeHook() {
         let detail = input2["command"] as? String ?? input2["file_path"] as? String ?? input2["url"] as? String ?? ""
         set("blocked", question: String("\(tool): \(detail)".prefix(300)))
     case "PostToolUse", "PostToolUseFailure":
-        if state["state"] as? String == "working" { return }   // nothing new: skip the write
         set("working")
+        // The step it just did, shown in the hover card while it works.
+        let detail = input2["command"] as? String ?? input2["file_path"] as? String ?? input2["pattern"] as? String
+            ?? input2["url"] as? String ?? input2["description"] as? String ?? ""
+        state["activity"] = String("\(tool)\(detail.isEmpty ? "" : ": " + detail)".prefix(300))
     case "Stop", "StopFailure":
         set("done")
         var message = event["last_assistant_message"] as? String ?? ""
@@ -133,7 +136,8 @@ func loadClaudeSessions(doneLifetime: TimeInterval) -> [Agent] {
         let question = row["question"] as? String ?? ""
         var agent = Agent(id: "claude:\(session)", kind: "claude", state: state,
                           workspace: (cwd as NSString).lastPathComponent, title: row["title"] as? String ?? "",
-                          handle: nil, lastMessage: row["message"] as? String ?? "",
+                          handle: nil, lastMessage: state == "working" ? tr("Last step: ", "Bước vừa xong: ") + (row["activity"] as? String ?? "…")
+                                                                         : row["message"] as? String ?? "",
                           prompt: question.isEmpty ? nil : AgentPrompt(question: question, options: []))
         agent.standalone = true
         agent.hostPid = pid_t(row["hostPid"] as? Int ?? 0)

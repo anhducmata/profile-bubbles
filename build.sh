@@ -8,6 +8,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O -swift-version 5 app/Sources/*.swift -o "$APP/Contents/MacOS/ProfileBubbles" -framework Cocoa -framework Carbon -framework ServiceManagement
 cp app/Info.plist "$APP/Contents/Info.plist"
 cp scripts/claude-hooks.py "$APP/Contents/Resources/claude-hooks.py"
+cp -R app/Sounds "$APP/Contents/Resources/Sounds"   # regenerate with scripts/make-sounds.py
 cp app/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"   # regenerate with scripts/make-icon.sh
 # A stable identity keeps privacy grants (Full Disk Access, Accessibility) across rebuilds.
 # Ad-hoc signing changes the code hash on every build, and macOS then forgets the grants.

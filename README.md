@@ -55,14 +55,23 @@ When [Orca](https://github.com/stablyai/orca) is running, a second row of bubble
 bottom-right corner, one per coding agent Orca runs (Claude Code, Codex, …).
 
 - The ring shows the state: blue working (an arc runs around it), orange needs approval, yellow
-  waiting for you, green done. A sound plays when an agent finishes; turn it off in Settings.
+  waiting for you, green done. One sound plays when an agent finishes and a different one when
+  it needs an approval or an answer. Pick each in Settings from the bundled chimes (Sparkle,
+  Kira Kira, Pikon, Level Up, Ta-da, …), the macOS system sounds, or your own files: **Add your
+  own sounds…** opens a folder that takes wav, aiff, mp3 and m4a. For anime-style girl voice
+  lines ("Yattaa!", "Chotto matte", "Yobimashita?", …) run `python3 scripts/get-voice-sounds.py`:
+  it downloads 25 free lines recorded by a voice actress from 効果音ラボ (Sound Effect Lab) into
+  that folder. For meme sounds (Vine boom, Bruh, Emotional damage, Metal Gear alert, Ối dồi ôi,
+  Khá Bảnh, Nhạc xổ số, …) run `python3 scripts/get-meme-sounds.py`; it downloads them from the
+  Myinstants soundboard. Any sound stops after 5 seconds.
   Finished agents leave the row after 30 minutes.
 - Click a bubble to bring Orca forward on that agent's terminal tab.
 - When an agent asks for an approval or a choice, a bar above the row shows the question with a
   button per option. A button presses that option in the agent's terminal; the menu is read again
   first, and if it changed the app jumps to the tab instead. Options that need typing have no button.
 
-Hover a bubble for a card with the agent's last message and its suggested next actions:
+Hover a bubble for a card with the agent's last message (while it works: the last lines of its
+terminal, refreshed live, so you can see what it is doing) and its suggested next actions:
 
 - asking for approval or a choice: one button per option;
 - working: **Interrupt** (sends Escape);

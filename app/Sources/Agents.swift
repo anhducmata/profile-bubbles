@@ -171,6 +171,29 @@ func inputText(_ screen: [String]) -> String? {
     return nil
 }
 
+/// What a working agent is doing right now: the last lines of its terminal above the input box
+/// (its latest steps and the status line with the timer), for the hover card.
+func activityText(_ screen: [String], lines limit: Int = 9, width: Int = 62) -> String {
+    var rows = screen
+    // Cut at the rule above the input box; what is below is the box and the mode line.
+    if let box = rows.lastIndex(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("❯") }), box > 0,
+       rows[box - 1].trimmingCharacters(in: .whitespaces).hasPrefix("─") {
+        rows = Array(rows[..<(box - 1)])
+    }
+    let frame = CharacterSet(charactersIn: "│┃|╭╮╰╯─━ \t")
+    let kept: [String] = rows.compactMap { raw in
+        // Side panels are drawn to the right of a "│": keep the main column only.
+        let main = raw.components(separatedBy: "│").first ?? raw
+        let text = main.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+        if text.trimmingCharacters(in: frame).isEmpty { return nil }
+        return text.count > width ? String(text.prefix(width - 1)) + "…" : text
+    }
+    // Drop the shared left margin so the block sits flush in the card.
+    let tail = Array(kept.suffix(limit))
+    let margin = tail.map { $0.prefix { $0 == " " }.count }.min() ?? 0
+    return tail.map { String($0.dropFirst(margin)) }.joined(separator: "\n")
+}
+
 /// What one click in the hover card does.
 enum QuickAction {
     case option(AgentOption)   // press an option of the agent's menu
@@ -433,11 +456,9 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
     static let soundKey = "agentSound"
     static var soundEnabled: Bool { UserDefaults.standard.object(forKey: soundKey) as? Bool ?? true }
 
-    static func playFinishedSound() {
-        guard let sound = NSSound(named: "Glass") else { log("agents: sound Glass not found"); return }
-        sound.stop()
-        sound.play()
-    }
+    static func playFinishedSound() { AgentSound.play(.finished) }
+    /// A different sound for "needs approval" or "waiting for you", so the two can be told apart by ear.
+    static func playNeedsYouSound() { AgentSound.play(.needsYou) }
 
     private let rowPanel = makeFloatingPanel()
     private let barPanel = makeFloatingPanel()
@@ -450,6 +471,7 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
     private var cardTimer: Timer?
     private var cardTicks = 0
     private var lastInputNote = ""
+    private var cardActivity = ""            // live terminal lines of the hovered working agent
     /// Finished agents the user took off the row. One comes back when it starts working again.
     private var dismissed = Set(UserDefaults.standard.stringArray(forKey: "agentDismissed") ?? [])
     private let queue = DispatchQueue(label: "agents.poll")
@@ -520,9 +542,19 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
                 let finished = fresh.filter { new in
                     new.state == "done" && self.agents.contains { $0.id == new.id && $0.state != "done" }
                 }
-                if !finished.isEmpty && AgentsController.soundEnabled {
-                    AgentsController.playFinishedSound()
-                    log("agents: finished sound (\(finished.count))")
+                // An agent that was on the row and now asks for an approval or an answer.
+                let asking = fresh.filter { new in
+                    new.needsYou && self.agents.contains { $0.id == new.id && !$0.needsYou }
+                }
+                if AgentsController.soundEnabled {
+                    // Needing the user matters more than finishing when both happen in one poll.
+                    if !asking.isEmpty {
+                        AgentsController.playNeedsYouSound()
+                        log("agents: needs-you sound (\(asking.count))")
+                    } else if !finished.isEmpty {
+                        AgentsController.playFinishedSound()
+                        log("agents: finished sound (\(finished.count))")
+                    }
                 }
                 self.agents = fresh
                 let after = summary(fresh)
@@ -802,6 +834,7 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
         renderCard()
         cardTicks = 0
         lastInputNote = ""
+        cardActivity = ""
         refreshCardInput()
         cardTimer?.invalidate()
         cardTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in self?.watchCard() }
@@ -813,7 +846,19 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
     /// stays open, because the agent's suggested next prompt appears a few seconds after it finishes.
     private func refreshCardInput() {
         guard let id = cardAgentID, let agent = agents.first(where: { $0.id == id }), let handle = agent.handle,
-              agent.prompt == nil, agent.state != "working" else { return }
+              agent.prompt == nil else { return }
+        if agent.state == "working" {
+            // Show what it is doing, refreshed while the card stays open.
+            queue.async { [weak self] in
+                let activity = activityText(Orca.screen(of: handle))
+                DispatchQueue.main.async {
+                    guard let self = self, self.cardAgentID == id, activity != self.cardActivity else { return }
+                    self.cardActivity = activity
+                    if !self.replying { self.renderCard() }
+                }
+            }
+            return
+        }
         queue.async { [weak self] in
             let found = Orca.input(of: handle)
             DispatchQueue.main.async {
@@ -879,7 +924,9 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
                     ok = ok && send(["--enter"])
                     outcome = ok ? "sent through menu option \(option.number)" : "send failed"
                 }
-            } else if Orca.input(of: handle).text == "" {
+            } else if inputText(screen) == "" {
+                // Only the terminal's own input box has to be empty. A prompt the agent suggests
+                // sits in Orca's composer, not in the terminal, so it is not in the way.
                 outcome = send(["--text", text, "--enter"]) ? "sent" : "send failed"
             }
             log("agents: reply (\(text.count) chars): \(outcome)")
@@ -917,10 +964,12 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
         sub.textColor = agent.stateColor.blended(withFraction: 0.3, of: .white)
         add(sub, gap: 8)
 
-        let body = agent.prompt?.question.isEmpty == false ? agent.prompt!.question : readable(agent.lastMessage)
+        let live = agent.state == "working" && agent.prompt == nil && !cardActivity.isEmpty
+        let body = agent.prompt?.question.isEmpty == false ? agent.prompt!.question
+            : live ? cardActivity : readable(agent.lastMessage)
         if !body.isEmpty {
             let text = NSTextField(wrappingLabelWithString: body)
-            text.font = .systemFont(ofSize: 12.5)
+            text.font = live ? .monospacedSystemFont(ofSize: 10.5, weight: .regular) : .systemFont(ofSize: 12.5)
             text.textColor = NSColor.white.withAlphaComponent(0.88)
             text.maximumNumberOfLines = 0
             text.isSelectable = false
