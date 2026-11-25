@@ -1,3 +1,5 @@
+<img src="docs/icon.png" width="128" alt="Profile Bubbles icon">
+
 # Profile Bubbles
 
 A column of small bubbles that always floats on the left edge of your Mac screen, one per
