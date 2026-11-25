@@ -178,6 +178,7 @@ enum QuickAction {
     case prompt(String)        // send a short prompt
     case interrupt             // Escape, while the agent is working
     case open                  // jump to the agent's tab
+    case dismiss               // take a finished agent's bubble off the row
 }
 
 /// Prompts offered for an idle agent; edited in Settings.
@@ -449,6 +450,8 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
     private var cardTimer: Timer?
     private var cardTicks = 0
     private var lastInputNote = ""
+    /// Finished agents the user took off the row. One comes back when it starts working again.
+    private var dismissed = Set(UserDefaults.standard.stringArray(forKey: "agentDismissed") ?? [])
     private let queue = DispatchQueue(label: "agents.poll")
     private var agents: [Agent] = []
     private var polling = false
@@ -490,16 +493,23 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
         polling = true
         let previous = agents
         let lifetime = doneLifetime
+        let hidden = dismissed
         queue.async { [weak self] in
             guard let self = self else { return }
             // Orca could not be asked this time (timeout): keep its bubbles as they were.
             var fresh: [Agent]? = (self.fetchOrca() ?? previous.filter { !$0.standalone }) + loadClaudeSessions(doneLifetime: lifetime)
+            let active = Set((fresh ?? []).filter { $0.state != "done" }.map(\.id))   // these lose their dismissal
+            fresh = fresh.map { $0.filter { !($0.state == "done" && hidden.contains($0.id)) } }
             // Agents that need the user sit nearest the corner.
             let order = ["blocked": 0, "waiting": 1, "working": 2, "done": 3]
             fresh?.sort { (order[$0.state] ?? 4, $0.id) < (order[$1.state] ?? 4, $1.id) }
             fresh = fresh.map { Array($0.prefix(self.maxBubbles)) }
             DispatchQueue.main.async {
                 self.polling = false
+                if !self.dismissed.isDisjoint(with: active) {
+                    self.dismissed.subtract(active)
+                    UserDefaults.standard.set(Array(self.dismissed), forKey: "agentDismissed")
+                }
                 guard let fresh = fresh, fresh != self.agents else { return }
                 // States and menu sizes only: titles and questions never reach the log.
                 func summary(_ list: [Agent]) -> String {
@@ -697,8 +707,9 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
     /// the bubble or on the card itself, so it has no button.
     private func actions(for agent: Agent) -> [(title: String, tooltip: String?, action: QuickAction)] {
         var list: [(String, String?, QuickAction)] = []
-        if agent.handle == nil { return [] }   // nothing can be typed into it from here
-        if let prompt = agent.prompt {
+        if agent.handle == nil {
+            // Nothing can be typed into it from here.
+        } else if let prompt = agent.prompt {
             for option in prompt.options.filter({ !needsTyping($0.label) }).prefix(4) {
                 list.append((shortLabel(option.label), option.label, .option(option)))
             }
@@ -712,6 +723,10 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
                 list.append(("↵ " + shortLabel(input, limit: 44), input, .submitInput(input)))
             }
         }
+        if agent.state == "done" {
+            list.append(("✕ " + tr("Remove", "Bỏ"), tr("Take this bubble off the row until the agent works again",
+                                                       "Bỏ bong bóng này khỏi hàng cho tới khi agent chạy lại"), .dismiss))
+        }
         return list.map { (title: $0.0, tooltip: $0.1, action: $0.2) }
     }
 
@@ -719,9 +734,18 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
     /// showed; otherwise it jumps to the tab so the user can look.
     func perform(_ action: QuickAction, on agent: Agent) {
         hideCard()
+        if case .dismiss = action {
+            dismissed.insert(agent.id)
+            if dismissed.count > 200 { dismissed = [agent.id] }   // ids of long-gone agents
+            UserDefaults.standard.set(Array(dismissed), forKey: "agentDismissed")
+            agents.removeAll { $0.id == agent.id }
+            log("agents: bubble removed by the user")
+            layout()
+            return
+        }
         guard let handle = agent.handle else { jump(to: agent); return }
         switch action {
-        case .open: jump(to: agent)
+        case .open, .dismiss: jump(to: agent)
         case .option(let option): answer(agent, option: option)
         case .submitInput, .prompt, .interrupt:
             queue.async { [weak self] in
@@ -925,7 +949,9 @@ final class AgentsController: NSObject, NSTextFieldDelegate {
         var lineHeight: CGFloat = 0
         let list = actions(for: agent)
         for (index, item) in list.enumerated() {
-            let button = pill(item.title, accent: index == 0 && agent.state != "working", tooltip: item.tooltip) { [weak self] in
+            var accent = index == 0 && agent.state != "working"
+            if case .dismiss = item.action { accent = false }
+            let button = pill(item.title, accent: accent, tooltip: item.tooltip) { [weak self] in
                 self?.perform(item.action, on: agent)
             }
             if x > pad && x + button.frame.width > width - pad { x = pad; y += lineHeight + 6 }
