@@ -49,6 +49,59 @@ Right-click a bubble → **Settings…**
   take the menu bar's height (the size setting is ignored). They can cover menu titles or menu bar
   icons that reach the notch. On a Mac without a notch they form a centred row under the menu bar.
 
+## Agent bubbles (Orca)
+
+When [Orca](https://github.com/stablyai/orca) is running, a second row of bubbles sits in the
+bottom-right corner, one per coding agent Orca runs (Claude Code, Codex, …).
+
+- The ring shows the state: blue working (an arc runs around it), orange needs approval, yellow
+  waiting for you, green done. A sound plays when an agent finishes; turn it off in Settings.
+  Finished agents leave the row after 30 minutes.
+- Click a bubble to bring Orca forward on that agent's terminal tab.
+- When an agent asks for an approval or a choice, a bar above the row shows the question with a
+  button per option. A button presses that option in the agent's terminal; the menu is read again
+  first, and if it changed the app jumps to the tab instead. Options that need typing have no button.
+
+Hover a bubble for a card with the agent's last message and its suggested next actions:
+
+- asking for approval or a choice: one button per option;
+- working: **Interrupt** (sends Escape);
+- idle with text in its input box (a draft, or the next prompt the agent suggests): **↵ text**
+  presses Enter on it;
+- idle with an empty input box: your quick prompts (`continue` and `commit` by default, edit them
+  in Settings).
+
+Clicking the bubble, or the card itself, opens the agent's tab in Orca.
+
+The card also has a reply box: type and press Return to send your own message to the agent (it is
+queued when the agent is working, and goes through the menu's "Type something" option when a
+question is open). Escape closes the card. If the screen changed before sending, the text is put on
+the clipboard and the app jumps to the tab.
+
+Each button reads the terminal again first and acts only when the screen still shows what the card
+showed; otherwise it jumps to the tab.
+
+The data comes from the `orca` command-line tool inside Orca.app (polled every 2 seconds), so
+nothing is installed into the agents. Turn the row off in Settings.
+
+### Claude Code outside Orca
+
+Tick **Claude Code outside Orca** in Settings (or run
+`python3 scripts/claude-hooks.py install "<path>/Profile Bubbles.app/Contents/MacOS/ProfileBubbles"`)
+to also get a bubble for Claude Code sessions in Terminal, iTerm, an editor's terminal or the
+Claude app. This adds hooks to `~/.claude/settings.json`; other hooks there are left alone and a
+copy of the file is kept as `settings.json.profile-bubbles.bak`. Sessions started before that need
+a restart to be seen.
+
+- The bubble, the state ring, the finished sound and the last message work as for Orca agents. A
+  permission request or a question shows on the bar as text.
+- A click brings forward the app that holds the session, not the exact tab.
+- There are no buttons and no reply box: without Orca the app has no way to type into the session.
+- "Needs approval" stays on until the approved tool has finished, since Claude Code sends no event
+  at the moment you approve.
+- The hooks call the app's binary at the path it had when you ticked the box. If you move the app,
+  untick and tick the box again.
+
 ## Permissions
 
 | Permission | Why | Required? |

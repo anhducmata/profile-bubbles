@@ -5,8 +5,9 @@ cd "$(dirname "$0")"
 APP="build/Profile Bubbles.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -swift-version 5 app/Sources/main.swift -o "$APP/Contents/MacOS/ProfileBubbles" -framework Cocoa -framework Carbon -framework ServiceManagement
+swiftc -O -swift-version 5 app/Sources/*.swift -o "$APP/Contents/MacOS/ProfileBubbles" -framework Cocoa -framework Carbon -framework ServiceManagement
 cp app/Info.plist "$APP/Contents/Info.plist"
+cp scripts/claude-hooks.py "$APP/Contents/Resources/claude-hooks.py"
 cp app/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"   # regenerate with scripts/make-icon.sh
 # A stable identity keeps privacy grants (Full Disk Access, Accessibility) across rebuilds.
 # Ad-hoc signing changes the code hash on every build, and macOS then forgets the grants.
